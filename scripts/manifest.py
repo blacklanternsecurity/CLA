@@ -108,6 +108,20 @@ def emit(**outputs):
     print("\n".join(lines))
 
 
+def charts(root):
+    listed = subprocess.run(["git", "ls-files", "-z", "--", "*Chart.yaml"], cwd=root, capture_output=True, text=True)
+    return [root / name for name in listed.stdout.split("\0") if name]
+
+
+def chart_fields(path):
+    found = {}
+    for line in path.read_text().splitlines():
+        field = re.match(r"""^(version|appVersion):\s*["']?([^"'\s#]+)""", line)
+        if field:
+            found[field[1]] = field[2]
+    return found
+
+
 def cmd_matrix(args):
     pyproject = load(args.root / "pyproject.toml")
     emit(
@@ -123,7 +137,18 @@ def cmd_tag(args):
     declared = version(args.root)
     if Version(declared) != Version(match["version"]):
         sys.exit(f"tag {args.tag} does not match manifest version {declared}")
-    emit(version=declared, prerelease=str(match["rc"] is not None).lower())
+    for chart in charts(args.root):
+        for field, value in chart_fields(chart).items():
+            if value != match["version"]:
+                sys.exit(f"tag {args.tag} does not match {chart} {field} {value}")
+    major, minor, _ = match["version"].split("-")[0].split(".")
+    emit(
+        version=declared,
+        semver=match["version"],
+        major=major,
+        minor=minor,
+        prerelease=str(match["rc"] is not None).lower(),
+    )
 
 
 def cmd_notes(args):

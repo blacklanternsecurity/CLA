@@ -79,7 +79,7 @@ jobs:
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" "${flags[@]}"
           shopt -s globstar nullglob
           files=(sbom/*.spdx.json)
-          [ -n "$ASSETS" ] && files+=($ASSETS)
+          for asset in $ASSETS; do files+=("$asset"); done
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
 
   image-sbom:

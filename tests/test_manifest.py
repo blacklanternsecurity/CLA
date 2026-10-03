@@ -48,7 +48,7 @@ def test_maturin_version_comes_from_cargo(repo):
         {"Cargo.toml": '[package]\nname = "x"\nversion = "2.0.0"\n'},
     )
     assert outputs(run(root, "matrix"))["maturin"] == "true"
-    assert outputs(run(root, "tag", "v2.0.0")) == {"version": "2.0.0", "prerelease": "false"}
+    assert outputs(run(root, "tag", "v2.0.0"))["version"] == "2.0.0"
 
 
 def test_hatch_version_path(repo):
@@ -77,3 +77,13 @@ def test_notes_extracts_one_section(tmp_path):
     result = run(tmp_path, "notes", str(changelog), "1.1.0")
     assert result.stdout.strip() == "- new"
     assert run(tmp_path, "notes", str(changelog), "9.9.9").returncode != 0
+
+
+def test_tracked_charts_must_match_tag(repo):
+    root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.2"\n'})
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    result = run(root, "tag", "v1.2.3")
+    assert result.returncode != 0 and "appVersion" in result.stderr
+    (root / "helm/Chart.yaml").write_text('name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n')
+    assert outputs(run(root, "tag", "v1.2.3")) == {"version": "1.2.3", "semver": "1.2.3", "major": "1", "minor": "2", "prerelease": "false"}
