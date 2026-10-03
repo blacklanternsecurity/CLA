@@ -187,6 +187,18 @@ def cmd_caller(args):
     sys.exit(f"no job in {args.root}/.github/workflows calls release-check.yml")
 
 
+def cmd_images(args):
+    listed = subprocess.run(["git", "ls-files", "-z", "--", "Dockerfile*"], cwd=args.root, capture_output=True, text=True, check=True)
+    builds = []
+    for name in sorted(n for n in listed.stdout.split("\0") if n and "/" not in n):
+        variant = name.removeprefix("Dockerfile").removeprefix(".")
+        suffix = f"-{variant}" if variant else ""
+        builds.append({"file": name, "suffix": suffix, "ref": f"{args.image}:{args.version}{suffix}"})
+    if not builds:
+        sys.exit(f"no Dockerfile tracked at {args.root}")
+    emit(builds=json.dumps(builds), images=json.dumps([b["ref"] for b in builds]))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("."))
@@ -200,6 +212,10 @@ def main():
     notes.add_argument("version")
     notes.set_defaults(func=cmd_notes)
     sub.add_parser("caller").set_defaults(func=cmd_caller)
+    images = sub.add_parser("images")
+    images.add_argument("image")
+    images.add_argument("version")
+    images.set_defaults(func=cmd_images)
     args = parser.parse_args()
     args.func(args)
 

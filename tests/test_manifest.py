@@ -106,3 +106,14 @@ def test_caller_reads_release_check_inputs(repo):
     )
     root = repo('[project]\nname = "x"\nversion = "1.0.0"\n', {".github/workflows/publish.yml": workflow})
     assert json.loads(run(root, "caller").stdout) == {"working-directory": "backend", "check-script": "scripts/v.py --check"}
+
+
+def test_images_from_tracked_root_dockerfiles(repo):
+    root = repo(
+        '[project]\nname = "x"\nversion = "1.0.0"\n', {"Dockerfile": "FROM scratch\n", "Dockerfile.full": "FROM scratch\n", "sub/Dockerfile": "FROM scratch\n"}
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    out = outputs(run(root, "images", "org/x", "1.0.0"))
+    assert json.loads(out["images"]) == ["org/x:1.0.0", "org/x:1.0.0-full"]
+    assert [b["file"] for b in json.loads(out["builds"])] == ["Dockerfile", "Dockerfile.full"]
