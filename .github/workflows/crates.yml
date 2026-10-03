@@ -1,0 +1,40 @@
+name: crates.io
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: .
+      setup-script:
+        description: Repository script run before cargo publish. It may append to $GITHUB_ENV.
+        type: string
+        default: ""
+      environment:
+        type: string
+        default: release
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - if: inputs.setup-script != ''
+        env:
+          SCRIPT: ${{ inputs.setup-script }}
+        run: '"./$SCRIPT"'
+      - env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
