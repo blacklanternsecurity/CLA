@@ -87,3 +87,13 @@ def test_tracked_charts_must_match_tag(repo):
     assert result.returncode != 0 and "appVersion" in result.stderr
     (root / "helm/Chart.yaml").write_text('name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n')
     assert outputs(run(root, "tag", "v1.2.3")) == {"version": "1.2.3", "semver": "1.2.3", "major": "1", "minor": "2", "prerelease": "false"}
+
+
+def test_chart_under_nested_package_is_not_ours(repo):
+    root = repo(
+        '[project]\nname = "x"\nversion = "1.2.3"\n',
+        {"server/pyproject.toml": '[project]\nname = "s"\nversion = "0.3.1"\n', "server/helm/Chart.yaml": "version: 0.3.1\n"},
+    )
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    assert outputs(run(root, "tag", "v1.2.3"))["version"] == "1.2.3"

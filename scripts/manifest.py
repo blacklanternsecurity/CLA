@@ -14,6 +14,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 TAG = re.compile(r"^v(?P<version>\d+\.\d+\.\d+(?:-rc\.(?P<rc>\d+))?)$")
+MANIFESTS = ("pyproject.toml", "Cargo.toml", "package.json")
 
 
 class Backend(Enum):
@@ -110,7 +111,15 @@ def emit(**outputs):
 
 def charts(root):
     listed = subprocess.run(["git", "ls-files", "-z", "--", "*Chart.yaml"], cwd=root, capture_output=True, text=True)
-    return [root / name for name in listed.stdout.split("\0") if name]
+    found = [root / name for name in listed.stdout.split("\0") if name]
+    return [chart for chart in found if owned(root, chart)]
+
+
+def owned(root, chart):
+    """A chart beneath a nested package manifest versions with that package, not with root."""
+    nested = [root / part for part in chart.parent.relative_to(root).parents][:-1]
+    nested.insert(0, chart.parent)
+    return not any((folder / name).is_file() for folder in nested if folder != root for name in MANIFESTS)
 
 
 def chart_fields(path):
