@@ -55,7 +55,7 @@ jobs:
         env:
           ROOT: ${{ inputs.working-directory }}
           TAG: ${{ github.ref_name }}
-        run: uv run --no-project --with packaging python .shared/scripts/manifest.py --root "$ROOT" tag "$TAG"
+        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" tag "$TAG"
       - if: inputs.check-script != ''
         env:
           SCRIPT: ${{ inputs.check-script }}

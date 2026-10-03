@@ -97,3 +97,12 @@ def test_chart_under_nested_package_is_not_ours(repo):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     assert outputs(run(root, "tag", "v1.2.3"))["version"] == "1.2.3"
+
+
+def test_caller_reads_release_check_inputs(repo):
+    workflow = (
+        "jobs:\n  check:\n    uses: blacklanternsecurity/CLA/.github/workflows/release-check.yml@abc\n"
+        "    with:\n      working-directory: backend\n      check-script: scripts/v.py --check\n"
+    )
+    root = repo('[project]\nname = "x"\nversion = "1.0.0"\n', {".github/workflows/publish.yml": workflow})
+    assert json.loads(run(root, "caller").stdout) == {"working-directory": "backend", "check-script": "scripts/v.py --check"}

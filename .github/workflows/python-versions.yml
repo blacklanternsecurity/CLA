@@ -36,4 +36,4 @@ jobs:
       - id: read
         env:
           ROOT: ${{ inputs.working-directory }}
-        run: uv run --no-project --with packaging python .shared/scripts/manifest.py --root "$ROOT" matrix
+        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" matrix

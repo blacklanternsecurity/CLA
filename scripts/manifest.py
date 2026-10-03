@@ -1,4 +1,4 @@
-"""Read release and test facts from a repository's own manifests. Run under uv with packaging available."""
+"""Read release and test facts from a repository's own manifests. Run under uv with packaging and pyyaml."""
 
 import argparse
 import json
@@ -10,6 +10,7 @@ import tomllib
 from enum import Enum
 from pathlib import Path
 
+import yaml
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
@@ -176,6 +177,16 @@ def cmd_notes(args):
     print("\n".join(section).strip())
 
 
+def cmd_caller(args):
+    for path in sorted((args.root / ".github" / "workflows").glob("*.y*ml")):
+        for job in (yaml.safe_load(path.read_text()) or {}).get("jobs", {}).values():
+            if "/.github/workflows/release-check.yml@" in str(job.get("uses", "")):
+                given = job.get("with", {})
+                print(json.dumps({"working-directory": given.get("working-directory", "."), "check-script": given.get("check-script", "")}))
+                return
+    sys.exit(f"no job in {args.root}/.github/workflows calls release-check.yml")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("."))
@@ -188,6 +199,7 @@ def main():
     notes.add_argument("changelog", type=Path)
     notes.add_argument("version")
     notes.set_defaults(func=cmd_notes)
+    sub.add_parser("caller").set_defaults(func=cmd_caller)
     args = parser.parse_args()
     args.func(args)
 

@@ -69,7 +69,7 @@ jobs:
         run: |
           flags=(--verify-tag)
           if [ -n "$CHANGELOG" ]; then
-            uv run --no-project --with packaging python .shared/scripts/manifest.py notes "$CHANGELOG" "$VERSION" > "$RUNNER_TEMP/notes.md"
+            uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py notes "$CHANGELOG" "$VERSION" > "$RUNNER_TEMP/notes.md"
             flags+=(--notes-file "$RUNNER_TEMP/notes.md")
           else
             flags+=(--generate-notes)

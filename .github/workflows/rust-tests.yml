@@ -9,6 +9,10 @@ on:
         description: Arguments for clippy and test, such as --workspace or --all-features --locked
         type: string
         default: --locked
+      test-args:
+        description: Arguments after -- for cargo test only, such as --include-ignored
+        type: string
+        default: ""
       setup-script:
         description: Repository script run before the test. It may append to $GITHUB_ENV.
         type: string
@@ -61,9 +65,11 @@ jobs:
         run: '"./$SCRIPT"'
       - env:
           CARGO_ARGS: ${{ inputs.cargo-args }}
+          TEST_ARGS: ${{ inputs.test-args }}
         run: |
           read -ra args <<<"$CARGO_ARGS"
-          cargo test "${args[@]}"
+          read -ra extra <<<"$TEST_ARGS"
+          cargo test "${args[@]}" -- "${extra[@]}"
       - if: always() && inputs.teardown-script != ''
         env:
           SCRIPT: ${{ inputs.teardown-script }}
