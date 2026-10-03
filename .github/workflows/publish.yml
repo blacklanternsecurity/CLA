@@ -1,0 +1,109 @@
+name: Publish release
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: version output of release-check.yml, which the caller runs first
+        type: string
+        required: true
+      prerelease:
+        description: prerelease output of release-check.yml
+        type: string
+        required: true
+      images:
+        description: JSON list of pushed image references to attach SBOMs for
+        type: string
+        default: "[]"
+      changelog:
+        description: Keep a Changelog file whose section for this version becomes the notes. Empty generates notes from commits.
+        type: string
+        default: ""
+      artifacts:
+        description: Artifact name pattern from earlier jobs in this run, downloaded into dist/
+        type: string
+        default: ""
+      assets:
+        description: Glob of files attached to the release, relative to the repository root
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+      - if: inputs.artifacts != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ${{ inputs.artifacts }}
+          path: dist
+          merge-multiple: true
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom/${{ github.event.repository.name }}-${{ github.ref_name }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          CHANGELOG: ${{ inputs.changelog }}
+          ASSETS: ${{ inputs.assets }}
+        run: |
+          flags=(--verify-tag)
+          if [ -n "$CHANGELOG" ]; then
+            uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py notes "$CHANGELOG" "$VERSION" > "$RUNNER_TEMP/notes.md"
+            flags+=(--notes-file "$RUNNER_TEMP/notes.md")
+          else
+            flags+=(--generate-notes)
+          fi
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" "${flags[@]}"
+          shopt -s globstar nullglob
+          files=(sbom/*.spdx.json)
+          for asset in $ASSETS; do files+=("$asset"); done
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+
+  image-sbom:
+    if: inputs.images != '[]'
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - id: name
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${GITHUB_REF_NAME}.spdx.json" >> "$GITHUB_OUTPUT"
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ matrix.image }}
+          format: spdx-json
+          output-file: ${{ steps.name.outputs.file }}
+          upload-artifact: false
+          upload-release-assets: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          FILE: ${{ steps.name.outputs.file }}
+        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$FILE"
