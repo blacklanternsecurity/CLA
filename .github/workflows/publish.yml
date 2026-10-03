@@ -2,6 +2,14 @@ name: Publish release
 on:
   workflow_call:
     inputs:
+      version:
+        description: version output of release-check.yml, which the caller runs first
+        type: string
+        required: true
+      prerelease:
+        description: prerelease output of release-check.yml
+        type: string
+        required: true
       images:
         description: JSON list of pushed image references to attach SBOMs for
         type: string
@@ -18,21 +26,12 @@ on:
         description: Glob of files attached to the release, relative to the repository root
         type: string
         default: ""
-      working-directory:
-        type: string
-        default: .
 
 permissions:
   contents: read
 
 jobs:
-  check:
-    uses: $/.github/workflows/release-check.yml
-    with:
-      working-directory: ${{ inputs.working-directory }}
-
   release:
-    needs: check
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -63,8 +62,8 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.check.outputs.version }}
-          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
           CHANGELOG: ${{ inputs.changelog }}
           ASSETS: ${{ inputs.assets }}
         run: |
