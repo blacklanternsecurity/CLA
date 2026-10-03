@@ -14,7 +14,7 @@ on:
         type: string
         default: ""
       setup-script:
-        description: Repository script run before the test. It may append to $GITHUB_ENV.
+        description: Repository script run before clippy and before the test. It may append to $GITHUB_ENV.
         type: string
         default: ""
       teardown-script:
@@ -40,11 +40,19 @@ jobs:
         with:
           workspaces: ${{ inputs.working-directory }}
       - run: cargo fmt --all -- --check
+      - if: inputs.setup-script != ''
+        env:
+          SCRIPT: ${{ inputs.setup-script }}
+        run: '"./$SCRIPT"'
       - env:
           CARGO_ARGS: ${{ inputs.cargo-args }}
         run: |
           read -ra args <<<"$CARGO_ARGS"
           cargo clippy --all-targets "${args[@]}" -- -D warnings
+      - if: always() && inputs.teardown-script != ''
+        env:
+          SCRIPT: ${{ inputs.teardown-script }}
+        run: '"./$SCRIPT"'
 
   test:
     runs-on: ubuntu-24.04

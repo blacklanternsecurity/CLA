@@ -95,11 +95,11 @@ jobs:
           python3 - <<'PY'
           import json, os, secrets
           values, names = json.loads(os.environ["SECRETS"]), json.loads(os.environ["NAMES"])
-          missing = [n for n in names if n not in values]
-          if missing:
-              raise SystemExit(f"secrets not passed by caller: {missing}")
+          for n in names:
+              if not values.get(n):
+                  print(f"::warning::secret {n} is unavailable, as on fork pull requests")
           with open(os.environ["GITHUB_ENV"], "a") as env:
-              for n in names:
+              for n in filter(values.get, names):
                   delim = secrets.token_hex(16)
                   env.write(f"{n}<<{delim}\n{values[n]}\n{delim}\n")
           PY
