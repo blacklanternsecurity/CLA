@@ -1,0 +1,81 @@
+name: Rust tests
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: .
+      cargo-args:
+        description: Arguments for clippy and test, such as --workspace or --all-features --locked
+        type: string
+        default: --locked
+      setup-script:
+        description: Repository script run before the test. It may append to $GITHUB_ENV.
+        type: string
+        default: ""
+      teardown-script:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Installs the channel pinned in rust-toolchain.toml.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+      - run: cargo fmt --all -- --check
+      - env:
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          read -ra args <<<"$CARGO_ARGS"
+          cargo clippy --all-targets "${args[@]}" -- -D warnings
+
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+      - if: inputs.setup-script != ''
+        env:
+          SCRIPT: ${{ inputs.setup-script }}
+        run: '"./$SCRIPT"'
+      - env:
+          CARGO_ARGS: ${{ inputs.cargo-args }}
+        run: |
+          read -ra args <<<"$CARGO_ARGS"
+          cargo test "${args[@]}"
+      - if: always() && inputs.teardown-script != ''
+        env:
+          SCRIPT: ${{ inputs.teardown-script }}
+        run: '"./$SCRIPT"'
+
+  passed:
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          ! grep -qE 'failure|cancelled' <<<"$RESULTS"

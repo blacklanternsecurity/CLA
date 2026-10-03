@@ -1,0 +1,148 @@
+name: Python tests
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: .
+      uv-sync-args:
+        type: string
+        default: --all-extras
+      pytest-args:
+        type: string
+        default: ""
+      setup-script:
+        description: Repository script run in every test leg before sync, for system packages or compose services. It may append to $GITHUB_ENV.
+        type: string
+        default: ""
+      teardown-script:
+        type: string
+        default: ""
+      env:
+        description: JSON object of plain environment variables for the test job
+        type: string
+        default: "{}"
+      secret-env:
+        description: JSON list of caller secret names exported under the same name. Requires secrets inherit.
+        type: string
+        default: "[]"
+      coverage:
+        description: Upload cov.xml to Codecov with the CODECOV_TOKEN secret
+        type: boolean
+        default: false
+      artifacts:
+        description: Path uploaded from every test leg, pass or fail
+        type: string
+        default: ""
+      lint:
+        type: boolean
+        default: true
+    outputs:
+      python-versions:
+        value: ${{ jobs.matrix.outputs.versions }}
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    uses: $/.github/workflows/python-versions.yml
+    with:
+      working-directory: ${{ inputs.working-directory }}
+
+  lint:
+    if: inputs.lint
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - env:
+          SYNC_ARGS: ${{ inputs.uv-sync-args }}
+        run: |
+          read -ra args <<<"$SYNC_ARGS"
+          uv sync --no-install-project "${args[@]}"
+      - run: uv run --no-sync ruff check
+      - run: uv run --no-sync ruff format --check
+
+  test:
+    needs: matrix
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    env: ${{ fromJSON(inputs.env) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - if: inputs.secret-env != '[]'
+        env:
+          SECRETS: ${{ toJSON(secrets) }}
+          NAMES: ${{ inputs.secret-env }}
+        run: |
+          python3 - <<'PY'
+          import json, os, secrets
+          values, names = json.loads(os.environ["SECRETS"]), json.loads(os.environ["NAMES"])
+          missing = [n for n in names if n not in values]
+          if missing:
+              raise SystemExit(f"secrets not passed by caller: {missing}")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              for n in names:
+                  delim = secrets.token_hex(16)
+                  env.write(f"{n}<<{delim}\n{values[n]}\n{delim}\n")
+          PY
+      - if: inputs.setup-script != ''
+        env:
+          SCRIPT: ${{ inputs.setup-script }}
+        run: '"./$SCRIPT"'
+      - env:
+          SYNC_ARGS: ${{ inputs.uv-sync-args }}
+        run: |
+          read -ra args <<<"$SYNC_ARGS"
+          uv sync "${args[@]}"
+      - if: needs.matrix.outputs.maturin == 'true'
+        run: uv run --no-sync maturin develop --release
+      - env:
+          PYTEST_ARGS: ${{ inputs.pytest-args }}
+        run: |
+          read -ra args <<<"$PYTEST_ARGS"
+          uv run --no-sync pytest "${args[@]}"
+      - if: inputs.coverage
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ inputs.working-directory }}/cov.xml
+          fail_ci_if_error: false
+      - if: always() && inputs.artifacts != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-${{ matrix.python-version }}
+          path: ${{ inputs.working-directory }}/${{ inputs.artifacts }}
+          if-no-files-found: ignore
+      - if: always() && inputs.teardown-script != ''
+        env:
+          SCRIPT: ${{ inputs.teardown-script }}
+        run: '"./$SCRIPT"'
+
+  passed:
+    if: always()
+    needs: [matrix, lint, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          ! grep -qE 'failure|cancelled' <<<"$RESULTS"

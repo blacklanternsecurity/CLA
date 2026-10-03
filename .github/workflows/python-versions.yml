@@ -1,0 +1,39 @@
+name: Python versions
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: .
+    outputs:
+      versions:
+        description: JSON list of released CPython minors that satisfy the manifest's requires-python
+        value: ${{ jobs.read.outputs.versions }}
+      maturin:
+        description: true when the build backend is maturin
+        value: ${{ jobs.read.outputs.maturin }}
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    outputs:
+      versions: ${{ steps.read.outputs.versions }}
+      maturin: ${{ steps.read.outputs.maturin }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - id: read
+        env:
+          ROOT: ${{ inputs.working-directory }}
+        run: uv run --no-project --with packaging python .shared/scripts/manifest.py --root "$ROOT" matrix

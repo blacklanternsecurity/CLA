@@ -31,7 +31,7 @@ jobs:
 
           for LOGIN in $COMMITTERS; do
             if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
-              echo "Unknown committer (no GitHub login) — not exempt"
+              echo "Unknown committer (no GitHub login): not exempt"
               ALL_EXEMPT=false
               continue
             fi
@@ -40,13 +40,13 @@ jobs:
 
             AUTHOR_TYPE=$(gh api "users/${LOGIN}" --jq '.type' 2>/dev/null || echo "Unknown")
             if [ "$AUTHOR_TYPE" = "Bot" ]; then
-              echo "$LOGIN is a Bot account — exempt"
+              echo "$LOGIN is a Bot account: exempt"
               EXEMPT=true
             fi
 
             if [ "$EXEMPT" = "false" ]; then
               if gh api "orgs/blacklanternsecurity/members/$LOGIN" > /dev/null 2>&1; then
-                echo "$LOGIN is an org member — exempt"
+                echo "$LOGIN is an org member: exempt"
                 EXEMPT=true
               fi
             fi
@@ -54,7 +54,7 @@ jobs:
             if [ "$EXEMPT" = "true" ]; then
               EXEMPT_LOGINS="${EXEMPT_LOGINS:+$EXEMPT_LOGINS,}$LOGIN"
             else
-              echo "$LOGIN is not exempt — CLA required"
+              echo "$LOGIN is not exempt: CLA required"
               ALL_EXEMPT=false
             fi
           done
@@ -74,7 +74,7 @@ jobs:
           gh api --method POST "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
             -f state=success \
             -f context="CLAAssistant" \
-            -f description="CLA check skipped — all committers are org members or bots"
+            -f description="CLA check skipped: all committers are org members or bots"
 
       - name: "CLA Assistant"
         if: |
