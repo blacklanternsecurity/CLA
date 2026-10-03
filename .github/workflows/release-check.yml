@@ -6,7 +6,7 @@ on:
         type: string
         default: .
       check-script:
-        description: Extra repository script run with the tag as its argument, for versions stated outside the manifest
+        description: Repository script and arguments, run with the tag appended, for versions stated outside the manifest
         type: string
         default: ""
     outputs:
@@ -60,4 +60,6 @@ jobs:
         env:
           SCRIPT: ${{ inputs.check-script }}
           TAG: ${{ github.ref_name }}
-        run: '"./$SCRIPT" "$TAG"'
+        run: |
+          read -ra cmd <<<"$SCRIPT"
+          "./${cmd[0]}" "${cmd[@]:1}" "$TAG"
