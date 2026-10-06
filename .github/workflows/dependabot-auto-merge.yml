@@ -1,0 +1,40 @@
+name: Dependabot auto-merge
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && !github.event.repository.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      # dev carries no required checks (#139), so the green gate is here rather than in --auto.
+      - if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          SELF: ${{ github.workflow }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          others='[.[] | select(.workflow != env.SELF)]'
+          while :; do
+            sleep 30
+            checks=$(gh pr checks "$PR_URL" --json name,bucket,workflow --jq "$others") || true
+            [ "$(jq length <<<"$checks")" -gt 0 ] || continue
+            jq -e 'any(.bucket == "pending")' <<<"$checks" >/dev/null && continue
+            break
+          done
+          jq -r '.[] | "\(.bucket)\t\(.name)"' <<<"$checks"
+          if jq -e 'any(.bucket == "fail" or .bucket == "cancel")' <<<"$checks" >/dev/null; then
+            echo "::error::checks failed, not merging"
+            exit 1
+          fi
+          gh pr merge "$PR_URL" --squash --match-head-commit "$HEAD"

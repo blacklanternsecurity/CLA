@@ -1,0 +1,5 @@
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined'
+      - 'reusable workflow call "\$/'
