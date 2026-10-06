@@ -26,6 +26,18 @@ on:
         description: Glob of files attached to the release, relative to the repository root
         type: string
         default: ""
+      registry:
+        description: Registry to log in to before generating image SBOMs, used only when registry-token is passed
+        type: string
+        default: docker.io
+      registry-username:
+        description: Username for the registry login
+        type: string
+        default: ""
+    secrets:
+      registry-token:
+        description: Token for pulling private images; omit for public images
+        required: false
 
 permissions:
   contents: read
@@ -95,6 +107,16 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
         run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${GITHUB_REF_NAME}.spdx.json" >> "$GITHUB_OUTPUT"
+      - id: auth
+        env:
+          TOKEN: ${{ secrets.registry-token }}
+        run: echo "login=$([ -n "$TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.auth.outputs.login == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry-username }}
+          password: ${{ secrets.registry-token }}
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ matrix.image }}
