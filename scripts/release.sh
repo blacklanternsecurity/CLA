@@ -14,11 +14,13 @@ git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git remote set-head "$remote" --auto >/dev/null
 trunk=$(git symbolic-ref --short "refs/remotes/$remote/HEAD")
 trunk=${trunk#"$remote/"}
+source=$trunk
+[[ $tag == *-rc.* ]] && source=dev
 branch=$(git symbolic-ref --quiet --short HEAD || true)
-[ "$branch" = "$trunk" ] || die "on '${branch:-detached HEAD}', not trunk '$trunk'"
+[ "$branch" = "$source" ] || die "on '${branch:-detached HEAD}', $tag is cut from '$source'"
 
-git fetch --quiet --tags "$remote" "$trunk"
-[ "$(git rev-parse HEAD)" = "$(git rev-parse "$remote/$trunk")" ] || die "local $trunk differs from $remote/$trunk"
+git fetch --quiet --tags "$remote" "$source"
+[ "$(git rev-parse HEAD)" = "$(git rev-parse "$remote/$source")" ] || die "local $source differs from $remote/$source"
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already exists"
 manifest() { uv run --quiet --no-project --with packaging --with pyyaml python "$here/manifest.py" "$@"; }
 caller=$(manifest caller) || die "no workflow here calls release-check.yml"
