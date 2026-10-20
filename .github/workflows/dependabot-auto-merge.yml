@@ -21,13 +21,13 @@ jobs:
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-          SELF: ${{ github.workflow }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          others='[.[] | select(.workflow != env.SELF)]'
+          # Workflow names diverge when the caller isn't on the default branch, run ids don't.
+          others='[.[] | select((.link // "") | contains("/actions/runs/" + env.GITHUB_RUN_ID + "/") | not)]'
           while :; do
             sleep 30
-            checks=$(gh pr checks "$PR_URL" --json name,bucket,workflow --jq "$others") || true
+            checks=$(gh pr checks "$PR_URL" --json name,bucket,link --jq "$others") || true
             [ "$(jq length <<<"$checks")" -gt 0 ] || continue
             jq -e 'any(.bucket == "pending")' <<<"$checks" >/dev/null && continue
             break
