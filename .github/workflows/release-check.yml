@@ -11,18 +11,18 @@ on:
         default: ""
     outputs:
       version:
-        description: Manifest version, equal to the tag. Every tracked Helm Chart.yaml version and appVersion must equal it too.
+        description: Manifest version of the merged commit. Every tracked Helm Chart.yaml version and appVersion must equal it.
         value: ${{ jobs.check.outputs.version }}
-      prerelease:
-        description: true for vX.Y.Z-rc.N tags
-        value: ${{ jobs.check.outputs.prerelease }}
-      semver:
-        description: The tag without its v prefix
-        value: ${{ jobs.check.outputs.semver }}
+      tag:
+        description: v<version>, created by publish.yml once everything is published
+        value: ${{ jobs.check.outputs.tag }}
       major:
         value: ${{ jobs.check.outputs.major }}
       minor:
         value: ${{ jobs.check.outputs.minor }}
+      release:
+        description: false when the version already has a GitHub release, so a push that keeps the version publishes nothing
+        value: ${{ jobs.check.outputs.release }}
 
 permissions:
   contents: read
@@ -31,15 +31,17 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     outputs:
-      version: ${{ steps.tag.outputs.version }}
-      prerelease: ${{ steps.tag.outputs.prerelease }}
-      semver: ${{ steps.tag.outputs.semver }}
-      major: ${{ steps.tag.outputs.major }}
-      minor: ${{ steps.tag.outputs.minor }}
+      version: ${{ steps.manifest.outputs.version }}
+      tag: ${{ steps.manifest.outputs.tag }}
+      major: ${{ steps.manifest.outputs.major }}
+      minor: ${{ steps.manifest.outputs.minor }}
+      release: ${{ steps.new.outputs.release }}
     steps:
-      - if: github.ref_type != 'tag'
+      - if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          TRUNK: ${{ github.event.repository.default_branch }}
         run: |
-          echo "::error::releases run on tag pushes only"
+          echo "::error::releases run from $TRUNK only"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,15 +53,25 @@ jobs:
           path: .shared
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - id: tag
+      - id: manifest
         env:
           ROOT: ${{ inputs.working-directory }}
-          TAG: ${{ github.ref_name }}
-        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" tag "$TAG"
+        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" release
       - if: inputs.check-script != ''
         env:
           SCRIPT: ${{ inputs.check-script }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.manifest.outputs.tag }}
         run: |
           read -ra cmd <<<"$SCRIPT"
           "./${cmd[0]}" "${cmd[@]:1}" "$TAG"
+      - id: new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::$TAG is already released, nothing to publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi

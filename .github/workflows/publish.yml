@@ -2,12 +2,16 @@ name: Publish release
 on:
   workflow_call:
     inputs:
+      release-app-id:
+        description: App ID of the release GitHub App
+        type: string
+        required: true
       version:
         description: version output of release-check.yml, which the caller runs first
         type: string
         required: true
-      prerelease:
-        description: prerelease output of release-check.yml
+      tag:
+        description: tag output of release-check.yml. Created here, on the commit being released, after every artifact is published.
         type: string
         required: true
       images:
@@ -38,6 +42,9 @@ on:
       registry-token:
         description: Token for pulling private images; omit for public images
         required: false
+      release-app-key:
+        description: Private key of the release GitHub App, the only actor the tag rulesets let create a v* tag
+        required: true
 
 permissions:
   contents: read
@@ -45,9 +52,16 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
-      contents: write
+      contents: read
     steps:
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ inputs.release-app-id }}
+          private-key: ${{ secrets.release-app-key }}
+          permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -67,26 +81,24 @@ jobs:
         with:
           path: .
           format: spdx-json
-          output-file: sbom/${{ github.event.repository.name }}-${{ github.ref_name }}.spdx.json
+          output-file: sbom/${{ github.event.repository.name }}-${{ inputs.tag }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ inputs.tag }}
           VERSION: ${{ inputs.version }}
-          PRERELEASE: ${{ inputs.prerelease }}
           CHANGELOG: ${{ inputs.changelog }}
           ASSETS: ${{ inputs.assets }}
         run: |
-          flags=(--verify-tag)
+          flags=(--target "$GITHUB_SHA")
           if [ -n "$CHANGELOG" ]; then
             uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py notes "$CHANGELOG" "$VERSION" > "$RUNNER_TEMP/notes.md"
             flags+=(--notes-file "$RUNNER_TEMP/notes.md")
           else
             flags+=(--generate-notes)
           fi
-          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$TAG" -R "$GITHUB_REPOSITORY" "${flags[@]}"
           shopt -s globstar nullglob
           files=(sbom/*.spdx.json)
@@ -97,8 +109,9 @@ jobs:
     if: inputs.images != '[]'
     needs: release
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
-      contents: write
+      contents: read
     strategy:
       matrix:
         image: ${{ fromJSON(inputs.images) }}
@@ -106,7 +119,14 @@ jobs:
       - id: name
         env:
           IMAGE: ${{ matrix.image }}
-        run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${GITHUB_REF_NAME}.spdx.json" >> "$GITHUB_OUTPUT"
+          TAG: ${{ inputs.tag }}
+        run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${TAG}.spdx.json" >> "$GITHUB_OUTPUT"
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ inputs.release-app-id }}
+          private-key: ${{ secrets.release-app-key }}
+          permission-contents: write
       - id: auth
         env:
           TOKEN: ${{ secrets.registry-token }}
@@ -125,7 +145,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
       - env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ inputs.tag }}
           FILE: ${{ steps.name.outputs.file }}
         run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$FILE"
