@@ -5,6 +5,13 @@ on:
       working-directory:
         type: string
         default: .
+      direct-push-paths:
+        description: >-
+          Space-separated paths a commit that didn't arrive through a merged pull request may touch
+          (cloudcheck's daily data files). Empty, the default: every commit since the last release
+          must come through a merged pull request.
+        type: string
+        default: ""
       check-script:
         description: Repository script and arguments, run with the tag appended, for versions stated outside the manifest
         type: string
@@ -37,6 +44,7 @@ jobs:
     permissions:
       contents: read
       actions: read # read the release environment's protection rules (the caller must grant it too)
+      pull-requests: read # match each commit to the pull request it arrived in (the caller must grant it too)
     outputs:
       version: ${{ steps.manifest.outputs.version }}
       tag: ${{ steps.manifest.outputs.tag }}
@@ -52,6 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the history since the last release tag, for the provenance check
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -99,6 +108,17 @@ jobs:
             exit 1
           fi
           echo "release=true" >> "$GITHUB_OUTPUT"
+      # Every commit being released must have arrived through a merged pull request, judged by
+      # pull-request association rather than commit author (anyone can set an author). A commit that
+      # bypassed review may touch only inputs.direct-push-paths, or the release fails.
+      - if: steps.new.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ inputs.working-directory }}
+          ALLOW: ${{ inputs.direct-push-paths }}
+        run: |
+          read -ra allow <<<"$ALLOW"
+          python3 .shared/scripts/provenance.py --root "$ROOT" --repo "$GITHUB_REPOSITORY" --allow "${allow[@]}"
       # A job that names a missing environment makes GitHub create it with no protection, so check the
       # release environment from outside it before any job enters it. Fails closed: anything unreadable
       # or unexpected stops the run. Private repositories on the Team plan can't have environment
