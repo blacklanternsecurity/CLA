@@ -2,10 +2,6 @@ name: Publish release
 on:
   workflow_call:
     inputs:
-      release-app-id:
-        description: App ID of the release GitHub App
-        type: string
-        required: true
       version:
         description: version output of release-check.yml, which the caller runs first
         type: string
@@ -42,9 +38,12 @@ on:
       registry-token:
         description: Token for pulling private images; omit for public images
         required: false
-      release-app-key:
-        description: Private key of the release GitHub App, the only actor the tag rulesets let create a v* tag
-        required: true
+      # The release App's ID and key are read from the caller repository's release environment
+      # (vars.BLS_RELEASE_APP_ID, secrets.BLS_RELEASE_PRIVATE_KEY). Callers never pass them; the
+      # key is held nowhere else. Declared here only so the environment's secret can be read.
+      BLS_RELEASE_PRIVATE_KEY:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
 
 permissions:
   contents: read
@@ -59,8 +58,8 @@ jobs:
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ inputs.release-app-id }}
-          private-key: ${{ secrets.release-app-key }}
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
           permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,8 +123,8 @@ jobs:
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ inputs.release-app-id }}
-          private-key: ${{ secrets.release-app-key }}
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
           permission-contents: write
       - id: auth
         env:

@@ -9,6 +9,10 @@ on:
         description: Repository script and arguments, run with the tag appended, for versions stated outside the manifest
         type: string
         default: ""
+    secrets:
+      BLS_RELEASE_PRIVATE_KEY:
+        description: Never passed by a caller. Declared so the preflight job can read the release environment's secret of this name.
+        required: false
     outputs:
       version:
         description: Manifest version of the merged commit. Every tracked Helm Chart.yaml version and appVersion must equal it.
@@ -21,7 +25,7 @@ on:
       minor:
         value: ${{ jobs.check.outputs.minor }}
       release:
-        description: false when the version already has a GitHub release, so a push that keeps the version publishes nothing
+        description: false when the v<version> tag already exists, so a push that keeps the version publishes nothing
         value: ${{ jobs.check.outputs.release }}
 
 permissions:
@@ -37,11 +41,10 @@ jobs:
       minor: ${{ steps.manifest.outputs.minor }}
       release: ${{ steps.new.outputs.release }}
     steps:
-      - if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
-        env:
-          TRUNK: ${{ github.event.repository.default_branch }}
+      # The release environment also allows only stable; this fails earlier, before anything is built.
+      - if: github.ref != 'refs/heads/stable'
         run: |
-          echo "::error::releases run from $TRUNK only"
+          echo "::error::releases run from stable only"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,14 +67,54 @@ jobs:
         run: |
           read -ra cmd <<<"$SCRIPT"
           "./${cmd[0]}" "${cmd[@]:1}" "$TAG"
+      # The tag is created last and can't be moved, so it is the record that a version was released.
+      # A version already on a registry with no tag means an earlier release stopped part way, or the
+      # version predates this workflow: releasing it again would tag a commit the artifacts weren't
+      # built from. Re-run the original release, or bump the version.
       - id: new
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.manifest.outputs.tag }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+          PYPI_NAME: ${{ steps.manifest.outputs.pypi_name }}
+          CRATE_NAME: ${{ steps.manifest.outputs.crate_name }}
         run: |
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::$TAG is already released, nothing to publish"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG exists, nothing to publish"
             echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          found=()
+          if [ -n "$PYPI_NAME" ] && curl -fsS -o /dev/null "https://pypi.org/pypi/$PYPI_NAME/$VERSION/json"; then
+            found+=("PyPI")
+          fi
+          if [ -n "$CRATE_NAME" ] && curl -fsS -o /dev/null -A "blacklanternsecurity-release-check" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION"; then
+            found+=("crates.io")
+          fi
+          if [ "${#found[@]}" -gt 0 ]; then
+            echo "::error::$VERSION is already on ${found[*]} but $TAG doesn't exist. Re-run the release that published it, or bump the version."
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+  # Fails before anything is published if the release App can't be used: the environment's variable
+  # or secret is missing, the key is wrong, or the App isn't installed on this repository. Runs in the
+  # release environment, the only place those values exist.
+  preflight:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions: {}
+    steps:
+      - env:
+          APP_ID: ${{ vars.BLS_RELEASE_APP_ID }}
+          KEY_SET: ${{ secrets.BLS_RELEASE_PRIVATE_KEY != '' }}
+        run: |
+          [ -n "$APP_ID" ] || { echo "::error::release environment variable BLS_RELEASE_APP_ID is not set"; exit 1; }
+          [ "$KEY_SET" = "true" ] || { echo "::error::release environment secret BLS_RELEASE_PRIVATE_KEY is not set"; exit 1; }
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
+          permission-contents: read

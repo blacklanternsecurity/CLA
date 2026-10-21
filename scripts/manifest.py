@@ -154,11 +154,24 @@ def git_dependencies(root):
     return found
 
 
+RELEASE_VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+
+
+def package_names(root):
+    """Registry names the release check looks the version up under: the PyPI project and, for Rust, the crate."""
+    pyproject = load(root / "pyproject.toml")
+    pypi = pyproject.get("project", {}).get("name") or pyproject.get("tool", {}).get("poetry", {}).get("name") or ""
+    manifest = pyproject.get("tool", {}).get("maturin", {}).get("manifest-path", "Cargo.toml")
+    crate = load(root / manifest).get("package", {}).get("name") or ""
+    return pypi, crate
+
+
 def cmd_release(args):
     declared = version(args.root)
-    parsed = Version(declared)
-    if parsed.is_prerelease or parsed.is_devrelease or str(parsed) != declared:
+    # Exactly MAJOR.MINOR.PATCH: packaging also accepts 1.2, 1.2.3.4, .postN, epochs and +local, none of which is a release here.
+    if not RELEASE_VERSION.fullmatch(declared):
         sys.exit(f"{declared} is not a MAJOR.MINOR.PATCH release version")
+    parsed = Version(declared)
     for chart in charts(args.root):
         for field, value in chart_fields(chart).items():
             if value != declared:
@@ -166,7 +179,8 @@ def cmd_release(args):
     pinned = git_dependencies(args.root)
     if pinned:
         sys.exit(f"stable must pin released versions, not git sources: {', '.join(pinned)}")
-    emit(version=declared, tag=f"v{declared}", major=str(parsed.major), minor=str(parsed.minor))
+    pypi, crate = package_names(args.root)
+    emit(version=declared, tag=f"v{declared}", major=str(parsed.major), minor=str(parsed.minor), pypi_name=pypi, crate_name=crate)
 
 
 def cmd_notes(args):

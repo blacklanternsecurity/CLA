@@ -92,7 +92,14 @@ def test_release_reads_the_manifest_version(repo):
     root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n'})
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
-    assert outputs(run(root, "release")) == {"version": "1.2.3", "tag": "v1.2.3", "major": "1", "minor": "2"}
+    assert outputs(run(root, "release")) == {
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "major": "1",
+        "minor": "2",
+        "pypi_name": "x",
+        "crate_name": "",
+    }
 
 
 def test_release_refuses_a_chart_behind_the_manifest(repo):
@@ -103,7 +110,9 @@ def test_release_refuses_a_chart_behind_the_manifest(repo):
     assert result.returncode != 0 and "appVersion" in result.stderr
 
 
-@pytest.mark.parametrize("declared", ["1.2.3rc4", "1.2.3.dev1", "1.2.3-beta.1"])
+@pytest.mark.parametrize(
+    "declared", ["1.2.3rc4", "1.2.3.dev1", "1.2.3-beta.1", "1.2", "1.2.3.4", "1.2.3.post1", "1!1.2.3", "1.2.3+local", "01.2.3", "v1.2.3"]
+)
 def test_release_refuses_a_prerelease_version(repo, declared):
     assert run(repo(f'[project]\nname = "x"\nversion = "{declared}"\n'), "release").returncode != 0
 
@@ -128,3 +137,12 @@ def test_release_refuses_git_crates(repo):
     )
     result = run(root, "release")
     assert result.returncode != 0 and "blastdns" in result.stderr
+
+
+def test_release_names_the_crate_for_maturin(repo):
+    root = repo(
+        '[build-system]\nbuild-backend = "maturin"\n[project]\nname = "radixtarget"\ndynamic = ["version"]\n',
+        {"Cargo.toml": '[package]\nname = "radixtarget"\nversion = "4.4.0"\n'},
+    )
+    out = outputs(run(root, "release"))
+    assert (out["pypi_name"], out["crate_name"]) == ("radixtarget", "radixtarget")

@@ -20,6 +20,15 @@ on:
         description: Push README.md to the Docker Hub repository description
         type: boolean
         default: false
+    # Read from the caller repository's release environment; callers pass nothing (and never
+    # secrets: inherit, which would hand this workflow every repository-level secret too).
+    secrets:
+      DOCKER_USERNAME:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
+      DOCKER_TOKEN:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
     outputs:
       images:
         description: JSON list of pushed version references, for publish.yml images
