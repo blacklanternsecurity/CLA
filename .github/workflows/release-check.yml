@@ -5,24 +5,35 @@ on:
       working-directory:
         type: string
         default: .
+      direct-push-paths:
+        description: >-
+          Space-separated paths a commit that didn't arrive through a merged pull request may touch
+          (cloudcheck's daily data files). Empty, the default: every commit since the last release
+          must come through a merged pull request.
+        type: string
+        default: ""
       check-script:
         description: Repository script and arguments, run with the tag appended, for versions stated outside the manifest
         type: string
         default: ""
+    secrets:
+      BLS_RELEASE_PRIVATE_KEY:
+        description: Never passed by a caller. Declared so the preflight job can read the release environment's secret of this name.
+        required: false
     outputs:
       version:
-        description: Manifest version, equal to the tag. Every tracked Helm Chart.yaml version and appVersion must equal it too.
+        description: Manifest version of the merged commit. Every tracked Helm Chart.yaml version and appVersion must equal it.
         value: ${{ jobs.check.outputs.version }}
-      prerelease:
-        description: true for vX.Y.Z-rc.N tags
-        value: ${{ jobs.check.outputs.prerelease }}
-      semver:
-        description: The tag without its v prefix
-        value: ${{ jobs.check.outputs.semver }}
+      tag:
+        description: v<version>, created by publish.yml once everything is published
+        value: ${{ jobs.check.outputs.tag }}
       major:
         value: ${{ jobs.check.outputs.major }}
       minor:
         value: ${{ jobs.check.outputs.minor }}
+      release:
+        description: false when the v<version> tag already exists, so a push that keeps the version publishes nothing
+        value: ${{ jobs.check.outputs.release }}
 
 permissions:
   contents: read
@@ -30,20 +41,26 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read # read the release environment's protection rules (the caller must grant it too)
+      pull-requests: read # match each commit to the pull request it arrived in (the caller must grant it too)
     outputs:
-      version: ${{ steps.tag.outputs.version }}
-      prerelease: ${{ steps.tag.outputs.prerelease }}
-      semver: ${{ steps.tag.outputs.semver }}
-      major: ${{ steps.tag.outputs.major }}
-      minor: ${{ steps.tag.outputs.minor }}
+      version: ${{ steps.manifest.outputs.version }}
+      tag: ${{ steps.manifest.outputs.tag }}
+      major: ${{ steps.manifest.outputs.major }}
+      minor: ${{ steps.manifest.outputs.minor }}
+      release: ${{ steps.new.outputs.release }}
     steps:
-      - if: github.ref_type != 'tag'
+      # The release environment also allows only stable; this fails earlier, before anything is built.
+      - if: github.ref != 'refs/heads/stable'
         run: |
-          echo "::error::releases run on tag pushes only"
+          echo "::error::releases run from stable only"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # the history since the last release tag, for the provenance check
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -51,15 +68,97 @@ jobs:
           path: .shared
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - id: tag
+      - id: manifest
         env:
           ROOT: ${{ inputs.working-directory }}
-          TAG: ${{ github.ref_name }}
-        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" tag "$TAG"
+        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py --root "$ROOT" release
       - if: inputs.check-script != ''
         env:
           SCRIPT: ${{ inputs.check-script }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.manifest.outputs.tag }}
         run: |
           read -ra cmd <<<"$SCRIPT"
           "./${cmd[0]}" "${cmd[@]:1}" "$TAG"
+      # The tag is created last and can't be moved, so it is the record that a version was released.
+      # A version already on a registry with no tag means an earlier release stopped part way, or the
+      # version predates this workflow: releasing it again would tag a commit the artifacts weren't
+      # built from. Re-run the original release, or bump the version.
+      - id: new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+          PYPI_NAME: ${{ steps.manifest.outputs.pypi_name }}
+          CRATE_NAME: ${{ steps.manifest.outputs.crate_name }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG exists, nothing to publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          found=()
+          if [ -n "$PYPI_NAME" ] && curl -fsS -o /dev/null "https://pypi.org/pypi/$PYPI_NAME/$VERSION/json"; then
+            found+=("PyPI")
+          fi
+          if [ -n "$CRATE_NAME" ] && curl -fsS -o /dev/null -A "blacklanternsecurity-release-check" "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION"; then
+            found+=("crates.io")
+          fi
+          if [ "${#found[@]}" -gt 0 ]; then
+            echo "::error::$VERSION is already on ${found[*]} but $TAG doesn't exist. Re-run the release that published it, or bump the version."
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+      # Every commit being released must have arrived through a merged pull request, judged by
+      # pull-request association rather than commit author (anyone can set an author). A commit that
+      # bypassed review may touch only inputs.direct-push-paths, or the release fails.
+      - if: steps.new.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ inputs.working-directory }}
+          ALLOW: ${{ inputs.direct-push-paths }}
+        run: |
+          read -ra allow <<<"$ALLOW"
+          python3 .shared/scripts/provenance.py --root "$ROOT" --repo "$GITHUB_REPOSITORY" --allow "${allow[@]}"
+      # A job that names a missing environment makes GitHub create it with no protection, so check the
+      # release environment from outside it before any job enters it. Fails closed: anything unreadable
+      # or unexpected stops the run. Private repositories on the Team plan can't have environment
+      # reviewers, so for them only the branch policy and the admin bypass are checked.
+      - if: steps.new.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          fail() { echo "::error::release environment: $1"; exit 1; }
+          env_json=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" 2>&1) || fail "can't be read ($env_json). Create and protect it before releasing."
+          [ "$(jq -r '.can_admins_bypass' <<<"$env_json")" = "false" ] || fail "admins can bypass it; turn that off"
+          [ "$(jq -r '.deployment_branch_policy.custom_branch_policies' <<<"$env_json")" = "true" ] || fail "deployments aren't limited to selected branches"
+          policies=$(gh api "repos/$GITHUB_REPOSITORY/environments/release/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | sort | join(",")') || fail "its branch policies can't be read"
+          [ "$policies" = "branch:stable" ] || fail "it must allow the stable branch only, not '$policies'"
+          if [ "$PRIVATE" != "true" ]; then
+            reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers")][0]' <<<"$env_json")
+            [ "$(jq '.reviewers | length' <<<"$reviewers")" -gt 0 ] 2>/dev/null || fail "it has no required reviewers"
+            [ "$(jq -r '.prevent_self_review' <<<"$reviewers")" = "true" ] || fail "prevent self-review is off"
+          fi
+          echo "::notice::release environment is protected"
+
+  # Fails before anything is published if the release App can't be used: the environment's variable
+  # or secret is missing, the key is wrong, or the App isn't installed on this repository. Runs in the
+  # release environment, the only place those values exist.
+  preflight:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions: {}
+    steps:
+      - env:
+          APP_ID: ${{ vars.BLS_RELEASE_APP_ID }}
+          KEY_SET: ${{ secrets.BLS_RELEASE_PRIVATE_KEY != '' }}
+        run: |
+          [ -n "$APP_ID" ] || { echo "::error::release environment variable BLS_RELEASE_APP_ID is not set"; exit 1; }
+          [ "$KEY_SET" = "true" ] || { echo "::error::release environment secret BLS_RELEASE_PRIVATE_KEY is not set"; exit 1; }
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
+          permission-contents: read

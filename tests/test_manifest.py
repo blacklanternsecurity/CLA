@@ -48,7 +48,7 @@ def test_maturin_version_comes_from_cargo(repo):
         {"Cargo.toml": '[package]\nname = "x"\nversion = "2.0.0"\n'},
     )
     assert outputs(run(root, "matrix"))["maturin"] == "true"
-    assert outputs(run(root, "tag", "v2.0.0"))["version"] == "2.0.0"
+    assert outputs(run(root, "release"))["version"] == "2.0.0"
 
 
 def test_hatch_version_path(repo):
@@ -56,19 +56,7 @@ def test_hatch_version_path(repo):
         '[build-system]\nbuild-backend = "hatchling.build"\n[project]\nname = "x"\ndynamic = ["version"]\n[tool.hatch.version]\npath = "x/__version__.py"\n',
         {"x/__version__.py": '__version__ = "1.2.3"\n'},
     )
-    assert outputs(run(root, "tag", "v1.2.3"))["version"] == "1.2.3"
-
-
-@pytest.mark.parametrize("declared", ["1.2.3rc4", "1.2.3-rc.4"])
-def test_rc_tag_matches_either_spelling(repo, declared):
-    root = repo(f'[project]\nname = "x"\nversion = "{declared}"\n')
-    assert outputs(run(root, "tag", "v1.2.3-rc.4"))["prerelease"] == "true"
-
-
-@pytest.mark.parametrize("tag", ["1.2.3", "v1.2", "v1.2.3rc4", "v1.2.3-beta.1", "v1.2.4"])
-def test_bad_tags_refused(repo, tag):
-    root = repo('[project]\nname = "x"\nversion = "1.2.3"\n')
-    assert run(root, "tag", tag).returncode != 0
+    assert outputs(run(root, "release"))["version"] == "1.2.3"
 
 
 def test_notes_extracts_one_section(tmp_path):
@@ -79,16 +67,6 @@ def test_notes_extracts_one_section(tmp_path):
     assert run(tmp_path, "notes", str(changelog), "9.9.9").returncode != 0
 
 
-def test_tracked_charts_must_match_tag(repo):
-    root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.2"\n'})
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
-    result = run(root, "tag", "v1.2.3")
-    assert result.returncode != 0 and "appVersion" in result.stderr
-    (root / "helm/Chart.yaml").write_text('name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n')
-    assert outputs(run(root, "tag", "v1.2.3")) == {"version": "1.2.3", "semver": "1.2.3", "major": "1", "minor": "2", "prerelease": "false"}
-
-
 def test_chart_under_nested_package_is_not_ours(repo):
     root = repo(
         '[project]\nname = "x"\nversion = "1.2.3"\n',
@@ -96,16 +74,7 @@ def test_chart_under_nested_package_is_not_ours(repo):
     )
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
-    assert outputs(run(root, "tag", "v1.2.3"))["version"] == "1.2.3"
-
-
-def test_caller_reads_release_check_inputs(repo):
-    workflow = (
-        "jobs:\n  check:\n    uses: blacklanternsecurity/CLA/.github/workflows/release-check.yml@abc\n"
-        "    with:\n      working-directory: backend\n      check-script: scripts/v.py --check\n"
-    )
-    root = repo('[project]\nname = "x"\nversion = "1.0.0"\n', {".github/workflows/publish.yml": workflow})
-    assert json.loads(run(root, "caller").stdout) == {"working-directory": "backend", "check-script": "scripts/v.py --check"}
+    assert outputs(run(root, "release"))["version"] == "1.2.3"
 
 
 def test_images_from_tracked_root_dockerfiles(repo):
@@ -117,3 +86,63 @@ def test_images_from_tracked_root_dockerfiles(repo):
     out = outputs(run(root, "images", "org/x", "1.0.0"))
     assert json.loads(out["images"]) == ["org/x:1.0.0", "org/x:1.0.0-full"]
     assert [b["file"] for b in json.loads(out["builds"])] == ["Dockerfile", "Dockerfile.full"]
+
+
+def test_release_reads_the_manifest_version(repo):
+    root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n'})
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    assert outputs(run(root, "release")) == {
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "major": "1",
+        "minor": "2",
+        "pypi_name": "x",
+        "crate_name": "",
+    }
+
+
+def test_release_refuses_a_chart_behind_the_manifest(repo):
+    root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.2"\n'})
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    result = run(root, "release")
+    assert result.returncode != 0 and "appVersion" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "declared", ["1.2.3rc4", "1.2.3.dev1", "1.2.3-beta.1", "1.2", "1.2.3.4", "1.2.3.post1", "1!1.2.3", "1.2.3+local", "01.2.3", "v1.2.3"]
+)
+def test_release_refuses_a_prerelease_version(repo, declared):
+    assert run(repo(f'[project]\nname = "x"\nversion = "{declared}"\n'), "release").returncode != 0
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        '[project]\nname = "x"\nversion = "1.0.0"\ndependencies = ["radixtarget @ git+https://github.com/blacklanternsecurity/radixtarget@dev"]\n',
+        '[project]\nname = "x"\nversion = "1.0.0"\n[tool.uv.sources]\nradixtarget = { git = "https://github.com/blacklanternsecurity/radixtarget", branch = "dev" }\n',
+        '[tool.poetry]\nname = "x"\nversion = "1.0.0"\n[tool.poetry.dependencies]\nradixtarget = { git = "https://github.com/blacklanternsecurity/radixtarget.git", branch = "dev" }\n',
+    ],
+)
+def test_release_refuses_git_dependencies(repo, pyproject):
+    result = run(repo(pyproject), "release")
+    assert result.returncode != 0 and "radixtarget" in result.stderr
+
+
+def test_release_refuses_git_crates(repo):
+    root = repo(
+        '[build-system]\nbuild-backend = "maturin"\n[project]\nname = "x"\ndynamic = ["version"]\n',
+        {"Cargo.toml": '[package]\nname = "x"\nversion = "1.0.0"\n[dependencies]\nblastdns = { git = "https://github.com/blacklanternsecurity/blastdns" }\n'},
+    )
+    result = run(root, "release")
+    assert result.returncode != 0 and "blastdns" in result.stderr
+
+
+def test_release_names_the_crate_for_maturin(repo):
+    root = repo(
+        '[build-system]\nbuild-backend = "maturin"\n[project]\nname = "radixtarget"\ndynamic = ["version"]\n',
+        {"Cargo.toml": '[package]\nname = "radixtarget"\nversion = "4.4.0"\n'},
+    )
+    out = outputs(run(root, "release"))
+    assert (out["pypi_name"], out["crate_name"]) == ("radixtarget", "radixtarget")

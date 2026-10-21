@@ -10,9 +10,6 @@ on:
         description: version output of release-check.yml
         type: string
         required: true
-      prerelease:
-        type: string
-        required: true
       major:
         type: string
         required: true
@@ -23,6 +20,15 @@ on:
         description: Push README.md to the Docker Hub repository description
         type: boolean
         default: false
+    # Read from the caller repository's release environment; callers pass nothing (and never
+    # secrets: inherit, which would hand this workflow every repository-level secret too).
+    secrets:
+      DOCKER_USERNAME:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
+      DOCKER_TOKEN:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
     outputs:
       images:
         description: JSON list of pushed version references, for publish.yml images
@@ -57,11 +63,10 @@ jobs:
   build:
     needs: plan
     runs-on: ubuntu-24.04
+    environment: release
     strategy:
       matrix:
         build: ${{ fromJSON(needs.plan.outputs.builds) }}
-    env:
-      RELEASE: ${{ inputs.prerelease == 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,11 +85,10 @@ jobs:
             suffix=${{ matrix.build.suffix }}
           tags: |
             type=raw,value=${{ inputs.version }}
-            type=raw,value=dev,enable=${{ env.RELEASE == 'false' }}
-            type=raw,value=latest,enable=${{ env.RELEASE }}
-            type=raw,value=stable,enable=${{ env.RELEASE }}
-            type=raw,value=${{ inputs.major }}.${{ inputs.minor }},enable=${{ env.RELEASE }}
-            type=raw,value=${{ inputs.major }},enable=${{ env.RELEASE }}
+            type=raw,value=latest
+            type=raw,value=stable
+            type=raw,value=${{ inputs.major }}.${{ inputs.minor }}
+            type=raw,value=${{ inputs.major }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -99,6 +103,7 @@ jobs:
     if: inputs.description
     needs: build
     runs-on: ubuntu-24.04
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

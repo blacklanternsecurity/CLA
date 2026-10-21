@@ -10,11 +10,9 @@ import tomllib
 from enum import Enum
 from pathlib import Path
 
-import yaml
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-TAG = re.compile(r"^v(?P<version>\d+\.\d+\.\d+(?:-rc\.(?P<rc>\d+))?)$")
 MANIFESTS = ("pyproject.toml", "Cargo.toml", "package.json")
 
 
@@ -140,25 +138,49 @@ def cmd_matrix(args):
     )
 
 
-def cmd_tag(args):
-    match = TAG.match(args.tag)
-    if not match:
-        sys.exit(f"tag {args.tag} is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N")
+def git_dependencies(root):
+    pyproject = load(root / "pyproject.toml")
+    project = pyproject.get("project", {})
+    found = [d for d in project.get("dependencies", []) if "git+" in d]
+    for group in project.get("optional-dependencies", {}).values():
+        found += [d for d in group if "git+" in d]
+    tool = pyproject.get("tool", {})
+    found += [name for name, source in tool.get("uv", {}).get("sources", {}).items() if "git" in source]
+    for table in ("dependencies", "dev-dependencies"):
+        found += [name for name, spec in tool.get("poetry", {}).get(table, {}).items() if isinstance(spec, dict) and "git" in spec]
+    cargo = load(root / tool.get("maturin", {}).get("manifest-path", "Cargo.toml"))
+    for table in ("dependencies", "build-dependencies"):
+        found += [name for name, spec in cargo.get(table, {}).items() if isinstance(spec, dict) and "git" in spec]
+    return found
+
+
+RELEASE_VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+
+
+def package_names(root):
+    """Registry names the release check looks the version up under: the PyPI project and, for Rust, the crate."""
+    pyproject = load(root / "pyproject.toml")
+    pypi = pyproject.get("project", {}).get("name") or pyproject.get("tool", {}).get("poetry", {}).get("name") or ""
+    manifest = pyproject.get("tool", {}).get("maturin", {}).get("manifest-path", "Cargo.toml")
+    crate = load(root / manifest).get("package", {}).get("name") or ""
+    return pypi, crate
+
+
+def cmd_release(args):
     declared = version(args.root)
-    if Version(declared) != Version(match["version"]):
-        sys.exit(f"tag {args.tag} does not match manifest version {declared}")
+    # Exactly MAJOR.MINOR.PATCH: packaging also accepts 1.2, 1.2.3.4, .postN, epochs and +local, none of which is a release here.
+    if not RELEASE_VERSION.fullmatch(declared):
+        sys.exit(f"{declared} is not a MAJOR.MINOR.PATCH release version")
+    parsed = Version(declared)
     for chart in charts(args.root):
         for field, value in chart_fields(chart).items():
-            if value != match["version"]:
-                sys.exit(f"tag {args.tag} does not match {chart} {field} {value}")
-    major, minor, _ = match["version"].split("-")[0].split(".")
-    emit(
-        version=declared,
-        semver=match["version"],
-        major=major,
-        minor=minor,
-        prerelease=str(match["rc"] is not None).lower(),
-    )
+            if value != declared:
+                sys.exit(f"{chart} {field} {value} does not match manifest version {declared}")
+    pinned = git_dependencies(args.root)
+    if pinned:
+        sys.exit(f"stable must pin released versions, not git sources: {', '.join(pinned)}")
+    pypi, crate = package_names(args.root)
+    emit(version=declared, tag=f"v{declared}", major=str(parsed.major), minor=str(parsed.minor), pypi_name=pypi, crate_name=crate)
 
 
 def cmd_notes(args):
@@ -175,16 +197,6 @@ def cmd_notes(args):
     if not inside:
         sys.exit(f"no '## [{args.version}]' section in {args.changelog}")
     print("\n".join(section).strip())
-
-
-def cmd_caller(args):
-    for path in sorted((args.root / ".github" / "workflows").glob("*.y*ml")):
-        for job in (yaml.safe_load(path.read_text()) or {}).get("jobs", {}).values():
-            if "/.github/workflows/release-check.yml@" in str(job.get("uses", "")):
-                given = job.get("with", {})
-                print(json.dumps({"working-directory": given.get("working-directory", "."), "check-script": given.get("check-script", "")}))
-                return
-    sys.exit(f"no job in {args.root}/.github/workflows calls release-check.yml")
 
 
 def cmd_images(args):
@@ -204,14 +216,11 @@ def main():
     parser.add_argument("--root", type=Path, default=Path("."))
     sub = parser.add_subparsers(required=True)
     sub.add_parser("matrix").set_defaults(func=cmd_matrix)
-    tag = sub.add_parser("tag")
-    tag.add_argument("tag")
-    tag.set_defaults(func=cmd_tag)
+    sub.add_parser("release").set_defaults(func=cmd_release)
     notes = sub.add_parser("notes")
     notes.add_argument("changelog", type=Path)
     notes.add_argument("version")
     notes.set_defaults(func=cmd_notes)
-    sub.add_parser("caller").set_defaults(func=cmd_caller)
     images = sub.add_parser("images")
     images.add_argument("image")
     images.add_argument("version")
