@@ -23,7 +23,7 @@ on:
         type: string
         default: "{}"
       secret-env:
-        description: JSON list of caller secret names exported under the same name. Requires secrets inherit.
+        description: JSON list of secret names, each declared below and passed by name, exported under the same name
         type: string
         default: "[]"
       coverage:
@@ -37,6 +37,11 @@ on:
       lint:
         type: boolean
         default: true
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+      BBOT_IO_API_KEY:
+        required: false
     outputs:
       python-versions:
         value: ${{ jobs.matrix.outputs.versions }}
