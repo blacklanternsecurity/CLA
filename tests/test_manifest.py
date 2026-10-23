@@ -92,7 +92,23 @@ def test_release_reads_the_manifest_version(repo):
     root = repo('[project]\nname = "x"\nversion = "1.2.3"\n', {"helm/Chart.yaml": 'name: x\nversion: 1.2.3\nappVersion: "1.2.3"\n'})
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
-    assert outputs(run(root, "release")) == {"version": "1.2.3", "tag": "v1.2.3", "major": "1", "minor": "2"}
+    assert outputs(run(root, "release")) == {
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "major": "1",
+        "minor": "2",
+        "pypi_name": "x",
+        "crate_name": "",
+    }
+
+
+def test_release_names_the_crate(repo):
+    root = repo(
+        '[build-system]\nbuild-backend = "maturin"\n[project]\nname = "x-py"\ndynamic = ["version"]\n',
+        {"Cargo.toml": '[package]\nname = "x"\nversion = "1.0.0"\n'},
+    )
+    out = outputs(run(root, "release"))
+    assert (out["pypi_name"], out["crate_name"]) == ("x-py", "x")
 
 
 def test_release_refuses_a_chart_behind_the_manifest(repo):
@@ -103,9 +119,13 @@ def test_release_refuses_a_chart_behind_the_manifest(repo):
     assert result.returncode != 0 and "appVersion" in result.stderr
 
 
-@pytest.mark.parametrize("declared", ["1.2.3rc4", "1.2.3.dev1", "1.2.3-beta.1"])
+@pytest.mark.parametrize(
+    "declared",
+    ["1.2.3rc4", "1.2.3.dev1", "1.2.3-beta.1", "1.2", "1.2.3.4", "1.2.3.post1", "1!1.2.3", "1.2.3+local", "01.2.3"],
+)
 def test_release_refuses_a_prerelease_version(repo, declared):
-    assert run(repo(f'[project]\nname = "x"\nversion = "{declared}"\n'), "release").returncode != 0
+    result = run(repo(f'[project]\nname = "x"\nversion = "{declared}"\n'), "release")
+    assert result.returncode != 0 and "MAJOR.MINOR.PATCH" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -114,6 +134,9 @@ def test_release_refuses_a_prerelease_version(repo, declared):
         '[project]\nname = "x"\nversion = "1.0.0"\ndependencies = ["radixtarget @ git+https://github.com/blacklanternsecurity/radixtarget@dev"]\n',
         '[project]\nname = "x"\nversion = "1.0.0"\n[tool.uv.sources]\nradixtarget = { git = "https://github.com/blacklanternsecurity/radixtarget", branch = "dev" }\n',
         '[tool.poetry]\nname = "x"\nversion = "1.0.0"\n[tool.poetry.dependencies]\nradixtarget = { git = "https://github.com/blacklanternsecurity/radixtarget.git", branch = "dev" }\n',
+        '[project]\nname = "x"\nversion = "1.0.0"\n[tool.uv.sources]\nradixtarget = [{ git = "https://github.com/blacklanternsecurity/radixtarget", marker = "sys_platform == \'linux\'" }, { index = "pypi" }]\n',
+        '[project]\nname = "x"\nversion = "1.0.0"\ndependencies = ["radixtarget @ https://github.com/blacklanternsecurity/radixtarget/archive/dev.zip"]\n',
+        '[project]\nname = "x"\nversion = "1.0.0"\n[tool.uv.sources]\nradixtarget = { url = "https://github.com/blacklanternsecurity/radixtarget/archive/dev.zip" }\n',
     ],
 )
 def test_release_refuses_git_dependencies(repo, pyproject):
@@ -121,10 +144,23 @@ def test_release_refuses_git_dependencies(repo, pyproject):
     assert result.returncode != 0 and "radixtarget" in result.stderr
 
 
-def test_release_refuses_git_crates(repo):
+@pytest.mark.parametrize(
+    "cargo",
+    [
+        '[package]\nname = "x"\nversion = "1.0.0"\n[dependencies]\nblastdns = { git = "https://github.com/blacklanternsecurity/blastdns" }\n',
+        '[package]\nname = "x"\nversion = "1.0.0"\n[target.\'cfg(unix)\'.dependencies]\nblastdns = { git = "https://github.com/blacklanternsecurity/blastdns" }\n',
+        '[package]\nname = "x"\nversion = "1.0.0"\n[dependencies]\nblastdns = { workspace = true }\n[workspace.dependencies]\nblastdns = { git = "https://github.com/blacklanternsecurity/blastdns" }\n',
+    ],
+)
+def test_release_refuses_git_crates(repo, cargo):
     root = repo(
         '[build-system]\nbuild-backend = "maturin"\n[project]\nname = "x"\ndynamic = ["version"]\n',
-        {"Cargo.toml": '[package]\nname = "x"\nversion = "1.0.0"\n[dependencies]\nblastdns = { git = "https://github.com/blacklanternsecurity/blastdns" }\n'},
+        {"Cargo.toml": cargo},
     )
     result = run(root, "release")
     assert result.returncode != 0 and "blastdns" in result.stderr
+
+
+def test_release_allows_registry_dependencies_with_markers(repo):
+    root = repo('[project]\nname = "x"\nversion = "1.0.0"\ndependencies = ["radixtarget>=3; python_version >= \'3.11\'", "y[extra]~=1.0"]\n')
+    assert run(root, "release").returncode == 0

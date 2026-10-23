@@ -14,6 +14,8 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 MANIFESTS = ("pyproject.toml", "Cargo.toml", "package.json")
+RELEASE_VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+CARGO_TABLES = ("dependencies", "build-dependencies")
 
 
 class Backend(Enum):
@@ -138,35 +140,59 @@ def cmd_matrix(args):
     )
 
 
+def unreleased(requirement):
+    """A PEP 508 direct reference (`name @ url`) installs whatever the URL serves, never a registry release."""
+    return "@" in requirement.split(";", 1)[0]
+
+
+def git_specs(table):
+    return [name for name, spec in table.items() if isinstance(spec, dict) and "git" in spec]
+
+
 def git_dependencies(root):
     pyproject = load(root / "pyproject.toml")
     project = pyproject.get("project", {})
-    found = [d for d in project.get("dependencies", []) if "git+" in d]
+    found = [d for d in project.get("dependencies", []) if unreleased(d)]
     for group in project.get("optional-dependencies", {}).values():
-        found += [d for d in group if "git+" in d]
+        found += [d for d in group if unreleased(d)]
     tool = pyproject.get("tool", {})
-    found += [name for name, source in tool.get("uv", {}).get("sources", {}).items() if "git" in source]
+    for name, source in tool.get("uv", {}).get("sources", {}).items():
+        sources = source if isinstance(source, list) else [source]
+        if any(isinstance(s, dict) and ("git" in s or "url" in s) for s in sources):
+            found.append(name)
     for table in ("dependencies", "dev-dependencies"):
-        found += [name for name, spec in tool.get("poetry", {}).get(table, {}).items() if isinstance(spec, dict) and "git" in spec]
+        found += git_specs(tool.get("poetry", {}).get(table, {}))
     cargo = load(root / tool.get("maturin", {}).get("manifest-path", "Cargo.toml"))
-    for table in ("dependencies", "build-dependencies"):
-        found += [name for name, spec in cargo.get(table, {}).items() if isinstance(spec, dict) and "git" in spec]
+    tables = [cargo.get(t, {}) for t in CARGO_TABLES]
+    tables += [target.get(t, {}) for target in cargo.get("target", {}).values() for t in CARGO_TABLES]
+    tables.append(cargo.get("workspace", {}).get("dependencies", {}))
+    for table in tables:
+        found += git_specs(table)
     return found
+
+
+def package_names(root):
+    pyproject = load(root / "pyproject.toml")
+    pypi = pyproject.get("project", {}).get("name") or pyproject.get("tool", {}).get("poetry", {}).get("name") or ""
+    manifest = pyproject.get("tool", {}).get("maturin", {}).get("manifest-path", "Cargo.toml")
+    crate = load(root / manifest).get("package", {}).get("name") or ""
+    return pypi, crate
 
 
 def cmd_release(args):
     declared = version(args.root)
-    parsed = Version(declared)
-    if parsed.is_prerelease or parsed.is_devrelease or str(parsed) != declared:
+    if not RELEASE_VERSION.fullmatch(declared):
         sys.exit(f"{declared} is not a MAJOR.MINOR.PATCH release version")
+    parsed = Version(declared)
     for chart in charts(args.root):
         for field, value in chart_fields(chart).items():
             if value != declared:
                 sys.exit(f"{chart} {field} {value} does not match manifest version {declared}")
     pinned = git_dependencies(args.root)
     if pinned:
-        sys.exit(f"stable must pin released versions, not git sources: {', '.join(pinned)}")
-    emit(version=declared, tag=f"v{declared}", major=str(parsed.major), minor=str(parsed.minor))
+        sys.exit(f"stable must pin released versions, not git or URL sources: {', '.join(pinned)}")
+    pypi, crate = package_names(args.root)
+    emit(version=declared, tag=f"v{declared}", major=str(parsed.major), minor=str(parsed.minor), pypi_name=pypi, crate_name=crate)
 
 
 def cmd_notes(args):

@@ -36,7 +36,11 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          crate=$(cargo metadata --no-deps --format-version 1 | jq -r --arg m "$PWD/Cargo.toml" '.packages[] | select(.manifest_path == $m) | .name')
+          if [ -z "$crate" ]; then
+            echo "::error::no [package] in $PWD/Cargo.toml"
+            exit 1
+          fi
           if curl -sf -o /dev/null -H "User-Agent: $GITHUB_REPOSITORY" "https://crates.io/api/v1/crates/$crate/$VERSION"; then
             echo "::notice::$crate $VERSION is already on crates.io"
             echo "skip=true" >> "$GITHUB_OUTPUT"

@@ -9,6 +9,14 @@ on:
         description: Repository script and arguments, run with the tag appended, for versions stated outside the manifest
         type: string
         default: ""
+      image:
+        description: Docker Hub repository this release pushes, so a version already pushed without its tag is caught
+        type: string
+        default: ""
+    secrets:
+      BLS_RELEASE_PRIVATE_KEY:
+        description: Never passed by a caller. Declared so the release environment's secret of this name resolves.
+        required: false
     outputs:
       version:
         description: Manifest version of the merged commit. Every tracked Helm Chart.yaml version and appVersion must equal it.
@@ -21,7 +29,7 @@ on:
       minor:
         value: ${{ jobs.check.outputs.minor }}
       release:
-        description: false when the version already has a GitHub release, so a push that keeps the version publishes nothing
+        description: false when the v<version> tag already exists, so a push that keeps the version publishes nothing
         value: ${{ jobs.check.outputs.release }}
 
 permissions:
@@ -37,11 +45,9 @@ jobs:
       minor: ${{ steps.manifest.outputs.minor }}
       release: ${{ steps.new.outputs.release }}
     steps:
-      - if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
-        env:
-          TRUNK: ${{ github.event.repository.default_branch }}
+      - if: github.ref != 'refs/heads/stable'
         run: |
-          echo "::error::releases run from $TRUNK only"
+          echo "::error::releases run from stable only"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,10 +74,49 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.manifest.outputs.tag }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+          PYPI_NAME: ${{ steps.manifest.outputs.pypi_name }}
+          CRATE_NAME: ${{ steps.manifest.outputs.crate_name }}
+          IMAGE: ${{ inputs.image }}
         run: |
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::$TAG is already released, nothing to publish"
+          status=$(gh api -i "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>/dev/null | head -1 | cut -d' ' -f2 || true)
+          if [ "$status" = 200 ]; then
+            echo "::notice::$TAG exists, nothing to publish"
             echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [ "$status" != 404 ]; then
+            echo "::error::could not read tag $TAG (HTTP ${status:-none})"
+            exit 1
+          fi
+          registry() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A "$GITHUB_REPOSITORY" "$1")
+            case "$code" in
+              200) found+=("$2") ;;
+              404) ;;
+              *) echo "::error::could not query $2 (HTTP $code)"; exit 1 ;;
+            esac
+          }
+          found=()
+          [ -z "$PYPI_NAME" ] || registry "https://pypi.org/pypi/$PYPI_NAME/$VERSION/json" PyPI
+          [ -z "$CRATE_NAME" ] || registry "https://crates.io/api/v1/crates/$CRATE_NAME/$VERSION" crates.io
+          [ -z "$IMAGE" ] || registry "https://hub.docker.com/v2/repositories/$IMAGE/tags/$VERSION" "Docker Hub"
+          if [ ${#found[@]} -gt 0 ]; then
+            echo "::error::$TAG is partly published from another run (${found[*]}); re-run that run or bump the version"
+            exit 1
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+  credentials:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
+          permission-contents: write

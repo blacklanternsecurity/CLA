@@ -2,10 +2,6 @@ name: Publish release
 on:
   workflow_call:
     inputs:
-      release-app-id:
-        description: App ID of the release GitHub App
-        type: string
-        required: true
       version:
         description: version output of release-check.yml, which the caller runs first
         type: string
@@ -42,15 +38,54 @@ on:
       registry-token:
         description: Token for pulling private images; omit for public images
         required: false
-      release-app-key:
-        description: Private key of the release GitHub App, the only actor the tag rulesets let create a v* tag
-        required: true
+      BLS_RELEASE_PRIVATE_KEY:
+        description: Never passed by a caller. Declared so the release environment's secret of this name resolves.
+        required: false
 
 permissions:
   contents: read
 
 jobs:
+  image-sbom:
+    if: inputs.images != '[]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - id: name
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ inputs.tag }}
+        run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${TAG}.spdx.json" >> "$GITHUB_OUTPUT"
+      - id: auth
+        env:
+          TOKEN: ${{ secrets.registry-token }}
+        run: echo "login=$([ -n "$TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.auth.outputs.login == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry-username }}
+          password: ${{ secrets.registry-token }}
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ matrix.image }}
+          format: spdx-json
+          output-file: ${{ steps.name.outputs.file }}
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-sbom-${{ steps.name.outputs.file }}
+          path: ${{ steps.name.outputs.file }}
+          if-no-files-found: error
+
   release:
+    needs: image-sbom
+    if: ${{ !cancelled() && needs.image-sbom.result != 'failure' }}
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -59,8 +94,8 @@ jobs:
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ inputs.release-app-id }}
-          private-key: ${{ secrets.release-app-key }}
+          app-id: ${{ vars.BLS_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BLS_RELEASE_PRIVATE_KEY }}
           permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,6 +111,12 @@ jobs:
         with:
           pattern: ${{ inputs.artifacts }}
           path: dist
+          merge-multiple: true
+      - if: inputs.images != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-sbom-*
+          path: sbom
           merge-multiple: true
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -104,48 +145,3 @@ jobs:
           files=(sbom/*.spdx.json)
           for asset in $ASSETS; do files+=("$asset"); done
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-
-  image-sbom:
-    if: inputs.images != '[]'
-    needs: release
-    runs-on: ubuntu-24.04
-    environment: release
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        image: ${{ fromJSON(inputs.images) }}
-    steps:
-      - id: name
-        env:
-          IMAGE: ${{ matrix.image }}
-          TAG: ${{ inputs.tag }}
-        run: echo "file=$(tr '/:@' '___' <<<"$IMAGE")-${TAG}.spdx.json" >> "$GITHUB_OUTPUT"
-      - id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ inputs.release-app-id }}
-          private-key: ${{ secrets.release-app-key }}
-          permission-contents: write
-      - id: auth
-        env:
-          TOKEN: ${{ secrets.registry-token }}
-        run: echo "login=$([ -n "$TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-      - if: steps.auth.outputs.login == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ inputs.registry-username }}
-          password: ${{ secrets.registry-token }}
-      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          image: ${{ matrix.image }}
-          format: spdx-json
-          output-file: ${{ steps.name.outputs.file }}
-          upload-artifact: false
-          upload-release-assets: false
-      - env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          TAG: ${{ inputs.tag }}
-          FILE: ${{ steps.name.outputs.file }}
-        run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$FILE"
