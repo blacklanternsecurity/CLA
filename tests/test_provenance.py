@@ -2,8 +2,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from provenance import git, previous_tag, violations  # noqa: E402
+from provenance import git, merged_into, previous_tag, violations  # noqa: E402
 
 DATA = ["cloud_providers_v3.json", "README.md"]
 
@@ -71,3 +73,41 @@ def test_history_since_the_previous_release_tag(tmp_path):
 
     assert violations(commits, lambda s: False, changed, DATA) == [(code, ["src/lib.rs"])]
     assert violations(commits, lambda s: s == code, changed, DATA) == []
+
+
+def test_a_pr_merged_into_another_branch_does_not_count():
+    assert not merged_into([{"merged_at": "t", "base": {"ref": "dev"}}], "stable")
+    assert not merged_into([{"merged_at": None, "base": {"ref": "stable"}}], "stable")
+    assert merged_into([{"merged_at": "t", "base": {"ref": "dev"}}, {"merged_at": "t", "base": {"ref": "stable"}}], "stable")
+
+
+def test_no_release_tag_at_all_is_a_first_release(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "stable"], cwd=tmp_path, check=True)
+    commit(tmp_path, "a", "1", "initial")
+    subprocess.run(["git", "tag", "not-a-release"], cwd=tmp_path, check=True)
+    assert previous_tag(tmp_path, "v*") is None
+
+
+def test_a_release_tag_not_reachable_from_head_is_an_error(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "stable"], cwd=tmp_path, check=True)
+    commit(tmp_path, "a", "1", "initial")
+    subprocess.run(["git", "checkout", "-q", "-b", "side"], cwd=tmp_path, check=True)
+    commit(tmp_path, "b", "1", "side")
+    subprocess.run(["git", "tag", "v1.0.0"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "checkout", "-q", "stable"], cwd=tmp_path, check=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        previous_tag(tmp_path, "v*")
+
+
+def test_only_the_first_parent_line_is_walked(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "stable"], cwd=tmp_path, check=True)
+    base = commit(tmp_path, "a", "1", "initial")
+    subprocess.run(["git", "tag", "v1.0.0", base], cwd=tmp_path, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "dev"], cwd=tmp_path, check=True)
+    side = commit(tmp_path, "b", "1", "dev work")
+    subprocess.run(["git", "checkout", "-q", "stable"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge dev", "dev"], cwd=tmp_path, check=True)
+    merge = git(tmp_path, "rev-parse", "HEAD").strip()
+    commits = git(tmp_path, "rev-list", "--first-parent", "v1.0.0..HEAD").split()
+    assert commits == [merge]
+    assert side not in commits
