@@ -38,6 +38,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.manifest.outputs.version }}
       tag: ${{ steps.manifest.outputs.tag }}
@@ -106,6 +109,24 @@ jobs:
             exit 1
           fi
           echo "release=true" >> "$GITHUB_OUTPUT"
+      # GitHub auto-creates a missing environment unprotected; Team-plan private repos can't have reviewers.
+      - if: steps.new.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          fail() { echo "::error::release environment: $1"; exit 1; }
+          env_json=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" 2>&1) || fail "can't be read ($env_json). Create and protect it before releasing."
+          [ "$(jq -r '.can_admins_bypass' <<<"$env_json")" = "false" ] || fail "admins can bypass it; turn that off"
+          [ "$(jq -r '.deployment_branch_policy.custom_branch_policies' <<<"$env_json")" = "true" ] || fail "deployments aren't limited to selected branches"
+          policies=$(gh api "repos/$GITHUB_REPOSITORY/environments/release/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | sort | join(",")') || fail "its branch policies can't be read"
+          [ "$policies" = "branch:stable" ] || fail "it must allow the stable branch only, not '$policies'"
+          if [ "$PRIVATE" != "true" ]; then
+            reviewers=$(jq '[.protection_rules[] | select(.type == "required_reviewers")][0]' <<<"$env_json")
+            [ "$(jq '.reviewers | length' <<<"$reviewers")" -gt 0 ] 2>/dev/null || fail "it has no required reviewers"
+            [ "$(jq -r '.prevent_self_review' <<<"$reviewers")" = "true" ] || fail "prevent self-review is off"
+          fi
+          echo "::notice::release environment is protected"
 
   credentials:
     needs: check
