@@ -9,7 +9,6 @@ jobs:
     permissions:
       pull-requests: write
       statuses: write
-      contents: read
     runs-on: ubuntu-24.04
     steps:
       - name: Generate token from GitHub App
