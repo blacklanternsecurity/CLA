@@ -10,9 +10,6 @@ on:
         description: version output of release-check.yml
         type: string
         required: true
-      prerelease:
-        type: string
-        required: true
       major:
         type: string
         required: true
@@ -23,6 +20,13 @@ on:
         description: Push README.md to the Docker Hub repository description
         type: boolean
         default: false
+    secrets:
+      DOCKER_USERNAME:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
+      DOCKER_TOKEN:
+        description: Never passed by a caller. The release environment's secret of this name.
+        required: false
     outputs:
       images:
         description: JSON list of pushed version references, for publish.yml images
@@ -57,11 +61,10 @@ jobs:
   build:
     needs: plan
     runs-on: ubuntu-24.04
+    environment: release
     strategy:
       matrix:
         build: ${{ fromJSON(needs.plan.outputs.builds) }}
-    env:
-      RELEASE: ${{ inputs.prerelease == 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,11 +83,10 @@ jobs:
             suffix=${{ matrix.build.suffix }}
           tags: |
             type=raw,value=${{ inputs.version }}
-            type=raw,value=dev,enable=${{ env.RELEASE == 'false' }}
-            type=raw,value=latest,enable=${{ env.RELEASE }}
-            type=raw,value=stable,enable=${{ env.RELEASE }}
-            type=raw,value=${{ inputs.major }}.${{ inputs.minor }},enable=${{ env.RELEASE }}
-            type=raw,value=${{ inputs.major }},enable=${{ env.RELEASE }}
+            type=raw,value=latest
+            type=raw,value=stable
+            type=raw,value=${{ inputs.major }}.${{ inputs.minor }}
+            type=raw,value=${{ inputs.major }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -94,16 +96,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.build.file }}
           cache-to: type=gha,mode=max,scope=${{ matrix.build.file }}
-
-  description:
-    if: inputs.description
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+      - if: inputs.description && matrix.build.suffix == ''
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}

@@ -1,0 +1,63 @@
+name: Docker dev
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: GHCR repository under ghcr.io, such as blacklanternsecurity/bbot
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    outputs:
+      builds: ${{ steps.read.outputs.builds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - id: read
+        env:
+          IMAGE: ghcr.io/${{ inputs.image }}
+        run: uv run --no-project --with packaging --with pyyaml python .shared/scripts/manifest.py images "$IMAGE" dev
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        build: ${{ fromJSON(needs.plan.outputs.builds) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.build.file }}
+          push: true
+          tags: |
+            ${{ matrix.build.ref }}
+            ghcr.io/${{ inputs.image }}:dev-${{ github.sha }}${{ matrix.build.suffix }}
+          cache-from: type=gha,scope=dev-${{ matrix.build.file }}
+          cache-to: type=gha,mode=max,scope=dev-${{ matrix.build.file }}
